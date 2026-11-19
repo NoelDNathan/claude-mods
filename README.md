@@ -54,3 +54,9 @@ el desglose (entrada, salida, caché leída y escrita), lo de los subagentes y e
 - La sección plegable **Archivo (N)** del final del panel las lista, con `↺ desarchivar` y `× borrar`.
 - Los tokens de las archivadas siguen contando en el total. **Gasto por tiempo** los desglosa por día, semana o mes;
   lo gastado antes de 0.5.0 no tiene fecha y sale como «sin fecha».
+
+## Crear tareas desde el panel (desde 0.6.0)
+
+El botón **+ Nueva tarea** abre un formulario: título, detalle opcional, para quién (Mía / De Claude) y proyecto
+(uno existente, el de la sesión o uno nuevo escrito a mano). **Añadir** la deja en To do (también con Enter en el
+título); **Añadir y empezar** la deja en In progress y pasa a ser la tarea activa, para que cuente su gasto.

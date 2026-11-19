@@ -3,6 +3,9 @@ export type Status = 'todo' | 'doing' | 'waiting' | 'done'
 export type Filter = 'all' | 'yo' | 'claude'
 export type Periodo = 'dia' | 'semana' | 'mes'
 
+/** Lo que se escribe en el formulario «Nueva tarea» del panel; `otro` es un proyecto nuevo escrito a mano. */
+export type Borrador = { abierta: boolean; titulo: string; desc: string; owner: Owner; proyecto: string; otro: string }
+
 /** Tokens gastados por tipo: entrada nueva, salida, caché leída y caché escrita. */
 export type Gasto = { i: number; o: number; r: number; w: number }
 
@@ -56,6 +59,8 @@ declare module 'claude-code' {
       archivoAbierto: Shaped<string>
       /** Sección Gasto por tiempo desplegada ('1') o plegada (''). */
       desgloseAbierto: Shaped<string>
+      /** Formulario «Nueva tarea»: abierto o no y lo escrito hasta ahora. */
+      borrador: Shaped<Borrador>
       /** Periodo del desglose por tiempo. */
       periodo: Shaped<Periodo>
       /** Tarea en curso de esta sesión ("proyecto|id"), o '' si ninguna. */

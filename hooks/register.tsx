@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Filter, Gasto, Libre, Owner, Periodo, Status, Task } from '../types'
+import type { Borrador, Filter, Gasto, Libre, Owner, Periodo, Status, Task } from '../types'
 
 const PANE = 'tareas'
 const MAX_POR_PROYECTO = 300
@@ -44,6 +44,11 @@ const archivoAbierto = atom({ plugin: 'tareas', key: 'archivoAbierto' } as const
 })
 const desgloseAbierto = atom({ plugin: 'tareas', key: 'desgloseAbierto' } as const, '', {
   shape: 'desgloseAbierto-1',
+})
+// Lo que se va escribiendo en el formulario «Nueva tarea» del panel.
+const BORRADOR_VACIO: Borrador = { abierta: false, titulo: '', desc: '', owner: 'yo', proyecto: '', otro: '' }
+const borrador = atom({ plugin: 'tareas', key: 'borrador' } as const, BORRADOR_VACIO, {
+  shape: 'borrador-1',
 })
 const periodo = atom({ plugin: 'tareas', key: 'periodo' } as const, 'semana' as Periodo, {
   shape: 'periodo-1',
@@ -701,7 +706,7 @@ export const register: Register = on => {
     })
 
     on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-      const { Box, Text, Button, Select } = $.ui.resolve(e)
+      const { Box, Text, Button, Select, Input } = $.ui.resolve(e)
       await read($, tick)
       const f = await read($, filter)
       const pestana = await read($, tab)
@@ -712,6 +717,8 @@ export const register: Register = on => {
       const archivoOpen = (await read($, archivoAbierto)) === '1'
       const desgloseOpen = (await read($, desgloseAbierto)) === '1'
       const per = await read($, periodo)
+      const b = await read($, borrador)
+      const cwdProyecto = nombreDeProyecto(await $.session.cwd())
 
       // Filtro de proyectos: solo cuenta lo elegido que aún existe.
       const nombres = [...new Set(todas.map(t => t.project))].sort((a, b) => a.localeCompare(b))
@@ -755,6 +762,35 @@ export const register: Register = on => {
           l.map(x => (x.id === t.id ? { ...x, owner: x.owner === 'yo' ? 'claude' : 'yo' } : x)),
         )
       const borrar = (t: Task) => cambiar($, t.project, l => l.filter(x => x.id !== t.id))
+
+      // Proyecto de la tarea nueva: el que se escribió, el elegido, el único del filtro o el de la sesión.
+      const proyectoDe = (x: Borrador) => x.otro.trim() || x.proyecto || (sel.length === 1 ? (sel[0] as string) : cwdProyecto)
+      const proyectoNuevo = proyectoDe(b)
+      // Lee el borrador en el momento de pulsar, no el de la última pintura: lo escrito justo antes cuenta.
+      const crear = async (empezar: boolean) => {
+        const actual = await read($, borrador)
+        const subject = actual.titulo.trim()
+        if (!subject) return
+        const ahora = Date.now()
+        const nueva = conEstado(
+          {
+            id: nuevoId(),
+            n: await numero($),
+            desc: actual.desc.trim() || undefined,
+            project: proyectoDe(actual),
+            subject,
+            owner: actual.owner,
+            status: 'todo',
+            at: ahora,
+          },
+          empezar ? 'doing' : 'todo',
+          ahora,
+        )
+        await cambiar($, nueva.project, l => [...l, nueva])
+        await marcar($, nueva)
+        await update($, borrador, () => BORRADOR_VACIO)
+      }
+      const editar = (cambio: Partial<Borrador>) => void update($, borrador, x => ({ ...x, ...cambio }))
       // Archivar no cambia el estado ni el `at` (cuándo se hizo); una tarea archivada deja de ser la activa.
       const archivar = async (t: Task, valor: boolean) => {
         await cambiar($, t.project, l =>
@@ -988,6 +1024,89 @@ export const register: Register = on => {
               <Text color="magenta">{deC} de Claude</Text>
             </Box>
           </Box>
+          <Box marginTop={1}>
+            <Button
+              key="nueva-abrir"
+              variant={b.abierta ? 'secondary' : 'primary'}
+              onPress={() => editar({ abierta: !b.abierta })}
+            >
+              {b.abierta ? '✕ Cerrar' : '+ Nueva tarea'}
+            </Button>
+          </Box>
+          {b.abierta && (
+            <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={1} gap={1}>
+              <Input
+                key="nueva-titulo"
+                label="Tarea"
+                placeholder="Qué hay que hacer"
+                value={b.titulo}
+                autoFocus
+                onInput={v => editar({ titulo: v })}
+                onSubmit={() => void crear(false)}
+              />
+              <Input
+                key="nueva-desc"
+                label="Detalle"
+                placeholder="Descripción (opcional)"
+                rows={2}
+                value={b.desc}
+                onInput={v => editar({ desc: v })}
+                onSubmit={() => void crear(false)}
+              />
+              <Box gap={1} flexWrap="wrap">
+                <Text dimColor>Para</Text>
+                <Button
+                  key="nueva-yo"
+                  variant={b.owner === 'yo' ? 'primary' : 'secondary'}
+                  onPress={() => editar({ owner: 'yo' })}
+                >
+                  ● Mía
+                </Button>
+                <Button
+                  key="nueva-claude"
+                  variant={b.owner === 'claude' ? 'primary' : 'secondary'}
+                  onPress={() => editar({ owner: 'claude' })}
+                >
+                  ✦ De Claude
+                </Button>
+              </Box>
+              <Box gap={1} flexWrap="wrap">
+                <Select
+                  key="nueva-proyecto"
+                  label="Proyecto"
+                  options={[...new Set([...nombres, cwdProyecto])]
+                    .sort((x, y) => x.localeCompare(y))
+                    .map(p => ({ value: p }))}
+                  value={b.otro.trim() ? '' : proyectoNuevo}
+                  onSelect={v => editar({ proyecto: v, otro: '' })}
+                />
+                <Input
+                  key="nueva-otro"
+                  label="o nuevo"
+                  placeholder="nombre del proyecto"
+                  value={b.otro}
+                  onInput={v => editar({ otro: v })}
+                  onSubmit={() => void crear(false)}
+                />
+              </Box>
+              <Box gap={1} flexWrap="wrap">
+                <Button key="nueva-crear" variant="primary" onPress={() => void crear(false)}>
+                  Añadir
+                </Button>
+                <Button key="nueva-empezar" variant="secondary" onPress={() => void crear(true)}>
+                  Añadir y empezar
+                </Button>
+                <Button key="nueva-cancelar" plain dimColor onPress={() => void update($, borrador, () => BORRADOR_VACIO)}>
+                  Cancelar
+                </Button>
+              </Box>
+              {!b.titulo.trim() && (
+                <Text dimColor size="footnote">
+                  Escribe un título para poder añadirla.
+                </Text>
+              )}
+            </Box>
+          )}
           {nombres.length > 1 && (
             <Box flexWrap="wrap" gap={1} marginTop={1}>
               {sel.length === 0 && <Text dimColor>Todos los proyectos</Text>}

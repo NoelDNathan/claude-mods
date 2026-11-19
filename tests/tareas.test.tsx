@@ -373,3 +373,64 @@ test('cada turno anota sus tokens en el día de hoy', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /^sin fecha$/ })).toBeFalsy()
   await ui.unmount()
 })
+
+test('se puede crear una tarea desde el propio panel', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  await ui.press({ key: 'nueva-abrir' })
+  await ui.input({ key: 'nueva-titulo', text: 'Hecha desde el panel', kind: 'change' })
+  await ui.input({ key: 'nueva-desc', text: 'Con detalle', kind: 'change' })
+  await ui.press({ key: 'nueva-claude' })
+  await ui.press({ key: 'nueva-crear' })
+
+  expect(await ui.find({ type: 'Text', text: /Hecha desde el panel/ })).toBeTruthy()
+  await ui.unmount()
+  const lista = JSON.stringify(await llamar($, 'listar_tareas'))
+  expect(lista).toContain('(claude) mi-proyecto: Hecha desde el panel')
+  expect(JSON.stringify(await llamar($, 'ver_tarea', { id: 1 }))).toContain('Con detalle')
+})
+
+test('"Añadir y empezar" la deja en curso y en un proyecto nuevo', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  await ui.press({ key: 'nueva-abrir' })
+  await ui.input({ key: 'nueva-titulo', text: 'Arrancar ya', kind: 'change' })
+  await ui.input({ key: 'nueva-otro', text: 'otro-proyecto', kind: 'change' })
+  await ui.press({ key: 'nueva-empezar' })
+  await ui.unmount()
+
+  expect(JSON.stringify(await llamar($, 'listar_tareas'))).toContain('#1 [doing] (yo) otro-proyecto: Arrancar ya')
+})
+
+test('sin título no se crea nada', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  await ui.press({ key: 'nueva-abrir' })
+  await ui.press({ key: 'nueva-crear' })
+  await ui.unmount()
+
+  expect(JSON.stringify(await llamar($, 'listar_tareas'))).toContain('No hay tareas')
+})
+
+test('Enter en el título crea la tarea', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  await ui.press({ key: 'nueva-abrir' })
+  await ui.input({ key: 'nueva-titulo', text: 'Con Enter', kind: 'change' })
+  await ui.input({ key: 'nueva-titulo', text: 'Con Enter', kind: 'submit' })
+  await ui.unmount()
+
+  expect(JSON.stringify(await llamar($, 'listar_tareas'))).toContain('#1 [todo] (yo) mi-proyecto: Con Enter')
+})
