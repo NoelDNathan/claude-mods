@@ -256,3 +256,25 @@ test('lo guardado antes del gasto sigue funcionando y no inventa cifras', async 
   expect(await ui.find({ type: 'Text', text: /tok/ })).toBeFalsy()
   await ui.unmount()
 })
+
+test('el filtro de proyectos deja ver solo el elegido', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+  await llamar($, 'anadir_tarea', {
+    tareas: [{ texto: 'Del primero', proyecto: 'uno' }, { texto: 'Del segundo', proyecto: 'dos' }],
+  })
+
+  const ancho = { ...PANE, props: { ...PANE.props, bodyColumns: 120 } }
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Del primero/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Del segundo/ })).toBeTruthy()
+
+  expect(await ui.find({ type: 'Button', text: /^dos$/ })).toBeTruthy()
+
+  await ui.press({ key: 'pr-dos' })
+
+  expect(await ui.find({ type: 'Text', text: /Del segundo/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Del primero/ })).toBeFalsy()
+  await ui.unmount()
+})

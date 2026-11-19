@@ -46,6 +46,8 @@ declare module 'claude-code' {
       /** Id de la tarea desplegada, o '' si ninguna. */
       open: Shaped<string>
       /** Tarea en curso de esta sesión ("proyecto|id"), o '' si ninguna. */
+      /** Proyectos elegidos en el filtro, separados por salto de línea; '' = todos. */
+      proyectos: Shaped<string>
       activa: Shaped<string>
       /** Tarea a la que se imputa el turno actual: la activa al empezarlo, o la última que pasó a activa. */
       objetivo: Shaped<string>

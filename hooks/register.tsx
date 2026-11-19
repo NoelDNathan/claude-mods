@@ -33,6 +33,10 @@ const activa = atom({ plugin: 'tareas', key: 'activa' } as const, '', {
 const objetivo = atom({ plugin: 'tareas', key: 'objetivo' } as const, '', {
   shape: 'objetivo-1',
 })
+// Proyectos elegidos para ver, separados por salto de línea. '' = todos.
+const proyectosSel = atom({ plugin: 'tareas', key: 'proyectos' } as const, '', {
+  shape: 'proyectos-1',
+})
 
 const COLUMNAS: { status: Status; titulo: string }[] = [
   { status: 'todo', titulo: 'To do' },
@@ -610,13 +614,28 @@ export const register: Register = on => {
       const todas = await cargarTodo($)
       const libre = ((await $.store.get(CLAVE_LIBRE)) as Libre | undefined) ?? undefined
       const ahora = Date.now()
-      const totalTok = todas.reduce((s, t) => s + propios(t.gasto), 0) + propios(libre?.gasto)
+
+      // Filtro de proyectos: solo cuenta lo elegido que aún existe.
+      const nombres = [...new Set(todas.map(t => t.project))].sort((a, b) => a.localeCompare(b))
+      const sel = (await read($, proyectosSel)).split('\n').filter(p => p && nombres.includes(p))
+      const verProyecto = (p: string) => sel.length === 0 || sel.includes(p)
+      const alternarProyecto = (p: string) =>
+        update($, proyectosSel, v => {
+          const actuales = v.split('\n').filter(Boolean)
+          return (actuales.includes(p) ? actuales.filter(x => x !== p) : [...actuales, p]).join('\n')
+        })
+      const gastoDe = (p: string) =>
+        todas.filter(t => t.project === p).reduce((s, t) => s + propios(t.gasto), 0)
+      // El total sigue al filtro; la bolsa "sin tarea" solo entra cuando se ven todos.
+      const totalTok =
+        todas.filter(t => verProyecto(t.project)).reduce((s, t) => s + propios(t.gasto), 0) +
+        (sel.length === 0 ? propios(libre?.gasto) : 0)
 
       // Ancho: con sitio, las 4 columnas; en un panel estrecho, una pestaña cada vez.
       const ancho = e.props.bodyColumns
       const enColumnas = ancho >= 90
 
-      const visibles = todas.filter(t => f === 'all' || t.owner === f)
+      const visibles = todas.filter(t => (f === 'all' || t.owner === f) && verProyecto(t.project))
       const cuantas = (s: Status) => visibles.filter(t => t.status === s).length
       const mias = todas.filter(t => t.owner === 'yo' && t.status !== 'done').length
       const deC = todas.filter(t => t.owner === 'claude' && t.status !== 'done').length
@@ -645,20 +664,51 @@ export const register: Register = on => {
       )
 
       // Una fila del desglose: etiqueta apagada con ancho fijo y el valor al lado, para que alineen.
-      const dato = (etiqueta: string, valor: string, color?: string) => (
+      // Cada parte lleva su color: así entrada, salida, caché y tiempo se distinguen y no todo es amarillo.
+      type Parte = string | [string, string]
+      const dato = (etiqueta: string, partes: Parte[]) => (
         <Box key={`d-${etiqueta}`} gap={1}>
           <Box width={11}>
             <Text dimColor size="footnote">
               {etiqueta}
             </Text>
           </Box>
-          <Box flexShrink={1}>
-            <Text color={color} size="footnote" wrap="wrap">
-              {valor}
-            </Text>
+          <Box flexWrap="wrap" gap={1} flexShrink={1}>
+            {partes.map((p, i) => (
+              <Text key={`p-${etiqueta}-${i}`} color={typeof p === 'string' ? undefined : p[1]} size="footnote">
+                {typeof p === 'string' ? p : p[0]}
+              </Text>
+            ))}
           </Box>
         </Box>
       )
+
+      // Barra de reparto entre entrada nueva y salida (la caché se deja fuera: aplastaría todo).
+      const barra = (g: Gasto) => {
+        const total = g.i + g.o
+        if (total === 0) return undefined
+        const ancho = 16
+        let e = Math.round((ancho * g.i) / total)
+        if (g.i > 0) e = Math.max(1, e)
+        if (g.o > 0) e = Math.min(ancho - 1, e)
+        return (
+          <Box key="d-reparto" gap={1}>
+            <Box width={11}>
+              <Text dimColor size="footnote">
+                Reparto
+              </Text>
+            </Box>
+            <Box>
+              <Text color="cyan" size="footnote">
+                {'█'.repeat(e)}
+              </Text>
+              <Text color="magenta" size="footnote">
+                {'█'.repeat(ancho - e)}
+              </Text>
+            </Box>
+          </Box>
+        )
+      }
 
       // Una tarea = dos líneas: título recortado y una línea de datos con iconos.
       const fila = (t: Task) => {
@@ -686,14 +736,22 @@ export const register: Register = on => {
                 {hace(t.at)}
               </Text>
               {propios(t.gasto) > 0 && (
-                <Text color="yellow" size="footnote">
-                  {`◆ ${compacto(propios(t.gasto))} tok`}
-                </Text>
+                <Box>
+                  <Text color="yellow" size="footnote">
+                    ◆{' '}
+                  </Text>
+                  <Text dimColor size="footnote">{`${compacto(propios(t.gasto))} tok`}</Text>
+                </Box>
               )}
               {enCurso(t, ahora) >= 60000 && (
-                <Text color="green" size="footnote">
-                  {`◷ ${duracion(enCurso(t, ahora))}`}
-                </Text>
+                <Box>
+                  <Text color="green" size="footnote">
+                    {t.status === 'done' ? '✓ ' : '◷ '}
+                  </Text>
+                  <Text dimColor size="footnote">
+                    {t.status === 'done' ? `hecha en ${duracion(enCurso(t, ahora))}` : duracion(enCurso(t, ahora))}
+                  </Text>
+                </Box>
               )}
               <Box flexGrow={1} />
               {t.status !== 'doing' && t.status !== 'done' && (
@@ -712,11 +770,21 @@ export const register: Register = on => {
             </Box>
             {desplegada && (t.gasto || t.trabajo || enCurso(t, ahora) > 0) && (
               <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-                {t.gasto && dato('Tokens', `${compacto(propios(t.gasto))} propios · ${compacto(t.gasto.i)} entrada · ${compacto(t.gasto.o)} salida`, 'yellow')}
-                {t.gasto && dato('Caché', `${compacto(t.gasto.r)} leída · ${compacto(t.gasto.w)} escrita`)}
-                {t.sub ? dato('Subagentes', `${compacto(t.sub)} tok`) : undefined}
-                {enCurso(t, ahora) > 0 && dato('En curso', duracion(enCurso(t, ahora)), 'green')}
-                {t.trabajo ? dato('Claude', `trabajando ${duracion(t.trabajo)}`) : undefined}
+                {t.gasto &&
+                  dato('Tokens', [
+                    `${compacto(propios(t.gasto))} propios`,
+                    [`${compacto(t.gasto.i)} entrada`, 'cyan'],
+                    [`${compacto(t.gasto.o)} salida`, 'magenta'],
+                  ])}
+                {t.gasto && barra(t.gasto)}
+                {t.gasto &&
+                  dato('Caché', [
+                    [`${compacto(t.gasto.r)} leída`, 'blue'],
+                    [`${compacto(t.gasto.w)} escrita`, 'blue'],
+                  ])}
+                {t.sub ? dato('Subagentes', [[`${compacto(t.sub)} tok`, 'yellow']]) : undefined}
+                {enCurso(t, ahora) > 0 && dato(t.status === 'done' ? 'Duró' : 'En curso', [[duracion(enCurso(t, ahora)), 'green']])}
+                {t.trabajo ? dato('Claude', [['trabajando', 'magenta'], duracion(t.trabajo)]) : undefined}
               </Box>
             )}
             {desplegada && t.desc && (
@@ -797,10 +865,33 @@ export const register: Register = on => {
               <Text color="magenta">{deC} de Claude</Text>
             </Box>
           </Box>
+          {nombres.length > 1 && (
+            <Box flexWrap="wrap" gap={1} marginTop={1}>
+              <Button
+                key="pr-todos"
+                variant={sel.length === 0 ? 'primary' : 'secondary'}
+                onPress={() => void update($, proyectosSel, () => '')}
+              >
+                Todos los proyectos
+              </Button>
+              {nombres.map(p => (
+                <Button
+                  key={`pr-${p}`}
+                  variant={sel.includes(p) ? 'primary' : 'secondary'}
+                  onPress={() => void alternarProyecto(p)}
+                >
+                  {gastoDe(p) > 0 ? `${p} · ${compacto(gastoDe(p))}` : p}
+                </Button>
+              ))}
+            </Box>
+          )}
           {totalTok > 0 && (
             <Box marginTop={1}>
-              <Text color="yellow" size="footnote" wrap="wrap">
-                {`◆ Gastado ${compacto(totalTok)} tok${propios(libre?.gasto) > 0 ? ` · sin tarea ${compacto(propios(libre?.gasto))}` : ''}`}
+              <Text color="yellow" size="footnote">
+                ◆{' '}
+              </Text>
+              <Text dimColor size="footnote" wrap="wrap">
+                {`Gastado ${compacto(totalTok)} tok${sel.length === 0 && propios(libre?.gasto) > 0 ? ` · sin tarea ${compacto(propios(libre?.gasto))}` : ''}`}
               </Text>
             </Box>
           )}

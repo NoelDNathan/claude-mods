@@ -37,3 +37,10 @@ el desglose (entrada, salida, caché leída y escrita), lo de los subagentes y e
   que pasó a *In progress*. Sin tarea en curso va a «sin tarea».
 - Los tokens de los subagentes cuentan; su reloj no, porque corre dentro del turno principal.
 - Son estimaciones, no la factura. Lo guardado antes de 0.3.0 no tiene cifras.
+
+## Filtro por proyecto y desglose (desde 0.4.0)
+
+- Con dos o más proyectos aparece una fila de botones: se puede elegir uno o varios; «Todos los proyectos» los
+  quita. Cada botón lleva el gasto del proyecto y el total de arriba sigue al filtro.
+- El desglose usa un color por tipo (entrada, salida, caché, tiempo) y una barra de reparto entrada/salida.
+- Las tareas hechas muestran cuánto duraron.
