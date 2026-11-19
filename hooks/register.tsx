@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Filter, Owner, Status, Task } from '../types'
+import type { Filter, Gasto, Libre, Owner, Status, Task } from '../types'
 
 const PANE = 'tareas'
 const MAX_POR_PROYECTO = 300
@@ -23,6 +23,15 @@ const tab = atom({ plugin: 'tareas', key: 'tab' } as const, 'todo' as Status, {
 })
 const open = atom({ plugin: 'tareas', key: 'open' } as const, '', {
   shape: 'open-1',
+})
+// Tarea en curso de esta sesión ("proyecto|id"). El gasto de cada turno se le imputa.
+const activa = atom({ plugin: 'tareas', key: 'activa' } as const, '', {
+  shape: 'activa-1',
+})
+// Tarea a la que se imputa el turno que corre: la activa al empezar, o la última que pasó a
+// activa durante él. Así un turno que cierra la tarea (la pasa a Done) sigue contando para ella.
+const objetivo = atom({ plugin: 'tareas', key: 'objetivo' } as const, '', {
+  shape: 'objetivo-1',
 })
 
 const COLUMNAS: { status: Status; titulo: string }[] = [
@@ -112,6 +121,117 @@ async function buscarPorNumero($: Acceso, n: number): Promise<Task | undefined> 
 }
 
 const ESTADOS: Status[] = ['todo', 'doing', 'waiting', 'done']
+
+// --- Gasto y tiempo ------------------------------------------------------------------------
+
+const CLAVE_LIBRE = 'libre'
+
+const gastoVacio = (): Gasto => ({ i: 0, o: 0, r: 0, w: 0 })
+
+type Uso = {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+}
+
+function sumarGasto(g: Gasto | undefined, u: Uso): Gasto {
+  const b = g ?? gastoVacio()
+  return {
+    i: b.i + (u.input_tokens || 0),
+    o: b.o + (u.output_tokens || 0),
+    r: b.r + (u.cache_read_input_tokens || 0),
+    w: b.w + (u.cache_creation_input_tokens || 0),
+  }
+}
+
+// "Tokens propios": entrada nueva + salida. La caché leída se repite en cada turno y
+// engaña (una tarea tardía de una sesión larga saldría cara solo por el contexto), así que
+// va aparte, en el detalle.
+const propios = (g?: Gasto) => (g ? g.i + g.o : 0)
+
+function compacto(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1e6) return `${n < 1e4 ? (n / 1e3).toFixed(1).replace('.0', '') : Math.round(n / 1e3)}k`
+  return `${(n / 1e6).toFixed(1).replace('.0', '')}M`
+}
+
+function duracion(ms: number): string {
+  const min = Math.round(ms / 60000)
+  if (min < 1) return ms < 1000 ? '0 min' : '<1 min'
+  if (min < 60) return `${min} min`
+  const h = Math.floor(min / 60)
+  const r = min % 60
+  return r === 0 ? `${h} h` : `${h} h ${r} min`
+}
+
+// Cambia el estado de una tarea cerrando o abriendo su cronómetro de "en curso".
+function conEstado(t: Task, status: Status, ahora: number): Task {
+  if (t.status === status) return t
+  let ms = t.ms ?? 0
+  let desde = t.desde
+  if (t.status === 'doing') {
+    ms += Math.max(0, ahora - (desde ?? t.at))
+    desde = undefined
+  }
+  if (status === 'doing') desde = ahora
+  return { ...t, status, ms, desde, at: ahora }
+}
+
+// Tiempo en curso: lo cerrado más lo que lleva la apertura actual.
+function enCurso(t: Task, ahora: number): number {
+  return (t.ms ?? 0) + (t.status === 'doing' ? Math.max(0, ahora - (t.desde ?? t.at)) : 0)
+}
+
+const refDe = (t: Task) => `${t.project}|${t.id}`
+
+// Al pasar una tarea a En curso pasa a ser la activa; al sacarla de ahí deja de serlo.
+async function marcar($: Mundo, t: Task): Promise<void> {
+  if (t.status === 'doing') {
+    await update($, activa, () => refDe(t))
+    await update($, objetivo, () => refDe(t))
+  } else if ((await read($, activa)) === refDe(t)) {
+    await update($, activa, () => '')
+  }
+}
+
+// Suma el gasto de un turno a su tarea; si no hay tarea (o ya no existe), a la bolsa "libre".
+async function imputar(
+  $: Mundo,
+  clave: string,
+  u: Uso | undefined,
+  esSub: boolean,
+  trabajoMs: number,
+): Promise<void> {
+  const propiosSub = u && esSub ? u.input_tokens + u.output_tokens : 0
+  const corte = clave.lastIndexOf('|')
+  if (corte > 0) {
+    const proyecto = clave.slice(0, corte)
+    const id = clave.slice(corte + 1)
+    let hallada = false
+    await cambiar($, proyecto, lista =>
+      lista.map(x => {
+        if (x.id !== id) return x
+        hallada = true
+        return {
+          ...x,
+          gasto: u ? sumarGasto(x.gasto, u) : x.gasto,
+          sub: (x.sub ?? 0) + propiosSub,
+          trabajo: (x.trabajo ?? 0) + trabajoMs,
+        }
+      }),
+    )
+    if (hallada) return
+  }
+  const previo = (await $.store.get(CLAVE_LIBRE)) as Libre | undefined
+  const nuevo: Libre = {
+    gasto: u ? sumarGasto(previo?.gasto, u) : (previo?.gasto ?? gastoVacio()),
+    sub: (previo?.sub ?? 0) + propiosSub,
+    trabajo: (previo?.trabajo ?? 0) + trabajoMs,
+  }
+  await $.store.set(CLAVE_LIBRE, nuevo)
+  await update($, tick, n => n + 1)
+}
 
 const resumen = (t: Task) =>
   `#${t.n ?? '?'} [${t.status}] (${t.owner === 'yo' ? 'yo' : 'claude'}) ${t.project}: ${t.subject}`
@@ -257,6 +377,29 @@ export const register: Register = on => {
       return { text: `Tarea #${n} añadida (${owner === 'yo' ? 'tuya' : 'de Claude'}): ${subject}` }
     })
 
+    // Cada turno principal empieza imputado a la tarea que esté en curso.
+    on('turn.start', async ($, e, next) => {
+      if (!e.agentId) {
+        const actual = await read($, activa)
+        await seguro(async () => update($, objetivo, () => actual))
+      }
+      return next(e)
+    })
+
+    // Al acabar un turno (de Claude o de un subagente) se suma su gasto y su tiempo a la tarea.
+    // El turno de un subagente corre dentro del principal: sus tokens cuentan, su reloj no
+    // (se contaría dos veces).
+    on('turn.complete', async ($, e, next) => {
+      const resultado = await next(e)
+      await seguro(async () => {
+        const clave = (await read($, objetivo)) || (await read($, activa))
+        const esSub = Boolean(e.agentId)
+        await imputar($, clave, e.usage, esSub, esSub ? 0 : e.durationMs)
+      })
+      if (!e.agentId) await seguro(async () => update($, objetivo, () => ''))
+      return resultado
+    })
+
     // La herramienta con la que Claude añade tareas al panel a petición del usuario.
     on('tool.call', { tool: 'mcp__tareas__anadir_tarea' }, async ($, e) => {
       // El motor espera el resultado de una herramienta del mod como texto simple.
@@ -277,21 +420,29 @@ export const register: Register = on => {
         }[]) {
           const subject = typeof x.texto === 'string' ? x.texto.trim() : ''
           if (!subject) continue
-          nuevas.push({
-            id: nuevoId(),
-            n: await numero($),
-            desc: typeof x.descripcion === 'string' && x.descripcion.trim() ? x.descripcion.trim() : undefined,
-            project: typeof x.proyecto === 'string' && x.proyecto.trim() ? x.proyecto.trim() : porDefecto,
-            subject,
-            owner: x.owner === 'yo' ? 'yo' : 'claude',
-            status: ESTADOS.find(s => s === x.estado) ?? 'todo',
-            at: Date.now(),
-          })
+          const ahora = Date.now()
+          nuevas.push(
+            conEstado(
+              {
+                id: nuevoId(),
+                n: await numero($),
+                desc: typeof x.descripcion === 'string' && x.descripcion.trim() ? x.descripcion.trim() : undefined,
+                project: typeof x.proyecto === 'string' && x.proyecto.trim() ? x.proyecto.trim() : porDefecto,
+                subject,
+                owner: x.owner === 'yo' ? 'yo' : 'claude',
+                status: 'todo',
+                at: ahora,
+              },
+              ESTADOS.find(s => s === x.estado) ?? 'todo',
+              ahora,
+            ),
+          )
         }
         if (nuevas.length === 0) return texto('Ninguna tarea tenía texto.', true)
         for (const proyecto of new Set(nuevas.map(t => t.project))) {
           await cambiar($, proyecto, lista => [...lista, ...nuevas.filter(t => t.project === proyecto)])
         }
+        for (const t of nuevas) await marcar($, t)
         return texto(`Añadidas ${nuevas.length} tareas al panel:\n${nuevas.map(resumen).join('\n')}`)
       } catch {
         return texto('No se pudo guardar en el almacén de tareas.', true)
@@ -347,15 +498,16 @@ export const register: Register = on => {
           await cambiar($, t.project, l => l.filter(y => y.id !== t.id))
           return { result: `Tarea #${n} borrada.` }
         }
+        const ahora = Date.now()
         const nueva: Task = {
-          ...t,
-          status: ESTADOS.find(s => s === x.estado) ?? t.status,
+          ...conEstado(t, ESTADOS.find(s => s === x.estado) ?? t.status, ahora),
           owner: x.owner === 'yo' || x.owner === 'claude' ? x.owner : t.owner,
           subject: x.texto?.trim() || t.subject,
           desc: x.descripcion?.trim() || t.desc,
-          at: Date.now(),
+          at: ahora,
         }
         await cambiar($, t.project, l => l.map(y => (y.id === t.id ? nueva : y)))
+        await marcar($, nueva)
         return { result: `Actualizada: ${resumen(nueva)}` }
       } catch {
         return { result: 'Error: no se pudo guardar en el almacén de tareas.' }
@@ -391,19 +543,22 @@ export const register: Register = on => {
         await seguro(async () => {
           const proyecto = nombreDeProyecto(await $.session.cwd())
           const marca = `${await read($, run)}:${entrada.taskId}`
+          const ahora = Date.now()
+          let tocada: Task | undefined
           await cambiar($, proyecto, lista => {
             if (entrada.status === 'deleted') return lista.filter(t => t.ref !== marca)
             return lista.map(t => {
               if (t.ref !== marca) return t
               const status = entrada.status ? deClaude[entrada.status] : undefined
-              return {
-                ...t,
+              tocada = {
+                ...conEstado(t, status ?? t.status, ahora),
                 subject: entrada.subject ?? t.subject,
-                status: status ?? t.status,
-                at: Date.now(),
+                at: ahora,
               }
+              return tocada
             })
           })
+          if (tocada) await marcar($, tocada)
         })
       }
       return ran
@@ -416,27 +571,32 @@ export const register: Register = on => {
       if (Array.isArray(todos)) await seguro(async () => {
         const proyecto = nombreDeProyecto(await $.session.cwd())
         const prefijo = `${await read($, run)}:todo:`
+        const ahora = Date.now()
+        let hechas: Task[] = []
         await cambiar($, proyecto, async lista => {
           const previas = new Map(lista.filter(t => t.ref?.startsWith(prefijo)).map(t => [t.ref, t]))
           const resto = lista.filter(t => !t.ref?.startsWith(prefijo))
           const nuevas: Task[] = []
           for (const td of todos) {
             const ref = `${prefijo}${td.content}`
-            const antes = previas.get(ref)
-            nuevas.push({
-              id: antes?.id ?? nuevoId(),
-              n: antes?.n ?? (await numero($)),
-              desc: antes?.desc,
+            // Parte de la tarea que ya había (conserva su gasto y su tiempo) o de una nueva en To do.
+            const base: Task = previas.get(ref) ?? {
+              id: nuevoId(),
+              n: await numero($),
               ref,
               project: proyecto,
               subject: td.content,
-              owner: antes?.owner ?? 'claude',
-              status: deClaude[td.status] ?? 'todo',
-              at: antes && antes.status === (deClaude[td.status] ?? 'todo') ? antes.at : Date.now(),
-            })
+              owner: 'claude',
+              status: 'todo',
+              at: ahora,
+            }
+            nuevas.push(conEstado(base, deClaude[td.status] ?? 'todo', ahora))
           }
+          hechas = nuevas
           return [...resto, ...nuevas]
         })
+        // La última en curso de la lista pasa a ser la activa.
+        for (const t of hechas) await marcar($, t)
       })
       return ran
     })
@@ -448,6 +608,9 @@ export const register: Register = on => {
       const pestana = await read($, tab)
       const abierta = await read($, open)
       const todas = await cargarTodo($)
+      const libre = ((await $.store.get(CLAVE_LIBRE)) as Libre | undefined) ?? undefined
+      const ahora = Date.now()
+      const totalTok = todas.reduce((s, t) => s + propios(t.gasto), 0) + propios(libre?.gasto)
 
       // Ancho: con sitio, las 4 columnas; en un panel estrecho, una pestaña cada vez.
       const ancho = e.props.bodyColumns
@@ -459,8 +622,11 @@ export const register: Register = on => {
       const deC = todas.filter(t => t.owner === 'claude' && t.status !== 'done').length
       const teEsperan = todas.filter(t => t.owner === 'yo' && t.status === 'waiting')
 
-      const mover = (t: Task, status: Status) =>
-        cambiar($, t.project, l => l.map(x => (x.id === t.id ? { ...x, status, at: Date.now() } : x)))
+      const mover = async (t: Task, status: Status) => {
+        const nueva = conEstado(t, status, Date.now())
+        await cambiar($, t.project, l => l.map(x => (x.id === t.id ? conEstado(x, status, nueva.at) : x)))
+        await marcar($, nueva)
+      }
       const traspasar = (t: Task) =>
         cambiar($, t.project, l =>
           l.map(x => (x.id === t.id ? { ...x, owner: x.owner === 'yo' ? 'claude' : 'yo' } : x)),
@@ -503,6 +669,16 @@ export const register: Register = on => {
               <Text dimColor size="footnote">
                 {hace(t.at)}
               </Text>
+              {propios(t.gasto) > 0 && (
+                <Text dimColor size="footnote">
+                  {`${compacto(propios(t.gasto))} tok`}
+                </Text>
+              )}
+              {enCurso(t, ahora) >= 60000 && (
+                <Text dimColor size="footnote">
+                  {duracion(enCurso(t, ahora))}
+                </Text>
+              )}
               <Box flexGrow={1} />
               {t.status !== 'doing' && t.status !== 'done' && (
                 <Button key={`d-${t.id}`} plain dimColor onPress={() => void mover(t, 'doing')}>
@@ -518,6 +694,21 @@ export const register: Register = on => {
                 {desplegada ? '▴' : '⋯'}
               </Button>
             </Box>
+            {desplegada && (t.gasto || t.trabajo || enCurso(t, ahora) > 0) && (
+              <Box paddingLeft={2} marginTop={1}>
+                <Text dimColor wrap="wrap">
+                  {[
+                    t.gasto &&
+                      `Entrada ${compacto(t.gasto.i)} · Salida ${compacto(t.gasto.o)} · Caché leída ${compacto(t.gasto.r)} · Caché escrita ${compacto(t.gasto.w)}`,
+                    t.sub ? `Subagentes ${compacto(t.sub)} tok` : undefined,
+                    enCurso(t, ahora) > 0 ? `En curso ${duracion(enCurso(t, ahora))}` : undefined,
+                    t.trabajo ? `Claude trabajando ${duracion(t.trabajo)}` : undefined,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
+              </Box>
+            )}
             {desplegada && t.desc && (
               <Box paddingLeft={2} marginY={1}>
                 <Text dimColor wrap="wrap">
@@ -596,6 +787,14 @@ export const register: Register = on => {
               <Text color="magenta">{deC} de Claude</Text>
             </Box>
           </Box>
+          {totalTok > 0 && (
+            <Box marginTop={1}>
+              <Text dimColor size="footnote" wrap="wrap">
+                {`Gastado: ${compacto(totalTok)} tok`}
+                {propios(libre?.gasto) > 0 ? ` · sin tarea ${compacto(propios(libre?.gasto))}` : ''}
+              </Text>
+            </Box>
+          )}
           {todas.length === 0 && (
             <Box marginTop={1}>
               <Text dimColor>

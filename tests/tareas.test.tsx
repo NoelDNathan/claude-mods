@@ -146,3 +146,113 @@ test('una tarea guardada antes de los ids recibe número al arrancar', async ($,
 
   expect(JSON.stringify(await llamar($, 'ver_tarea', { id: 1 }))).toContain('Tarea anterior')
 })
+
+// --- Gasto y tiempo por tarea ------------------------------------------------------------
+
+const uso = (i: number, o: number, r = 0, w = 0) => ({
+  input_tokens: i,
+  output_tokens: o,
+  cache_read_input_tokens: r,
+  cache_creation_input_tokens: w,
+  model: 'm',
+})
+
+// Un turno principal entero: empieza, pasa lo que haga falta dentro y termina con su uso.
+async function turno($: any, id: string, usage: unknown, durationMs: number, dentro?: () => Promise<void>) {
+  await $.turn.start({ text: 'x', turnId: id })
+  if (dentro) await dentro()
+  await $.turn.complete({ answer: '', durationMs, isAborted: false, turnId: id, reason: 'answer', usage })
+}
+
+test('el gasto de un turno va a la tarea en curso, por tipo de token', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  await iniciar($)
+  await llamar($, 'anadir_tarea', { tareas: [{ texto: 'Con gasto', estado: 'doing' }] })
+
+  await turno($, 't1', uso(1000, 500, 20000, 300), 60000)
+  await turno($, 't2', uso(200, 100), 30000)
+
+  const ver = JSON.stringify(await llamar($, 'listar_tareas'))
+  expect(ver).toContain('Con gasto')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Propios = entrada nueva + salida: 1000+500+200+100 = 1800 → "1.8k tok".
+  expect(await ui.find({ type: 'Text', text: /1\.8k tok/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('el turno que cierra la tarea se le sigue imputando, y el siguiente va a "sin tarea"', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  await iniciar($)
+  await llamar($, 'anadir_tarea', { tareas: [{ texto: 'Se cierra', estado: 'doing' }] })
+
+  await turno($, 't1', uso(1000, 0), 1000, async () => {
+    await llamar($, 'actualizar_tarea', { id: 1, estado: 'done' })
+  })
+  await turno($, 't2', uso(400, 0), 1000)
+
+  const ver = JSON.stringify(await llamar($, 'ver_tarea', { id: 1 }))
+  expect(ver).toContain('#1 [done]')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /sin tarea 400/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('dos tareas solapadas: el gasto va a la última que pasó a en curso', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  await iniciar($)
+  await llamar($, 'anadir_tarea', { tareas: [{ texto: 'Primera' }, { texto: 'Segunda' }] })
+
+  await llamar($, 'actualizar_tarea', { id: 1, estado: 'doing' })
+  await turno($, 't1', uso(100, 0), 1000)
+  await llamar($, 'actualizar_tarea', { id: 2, estado: 'doing' })
+  await turno($, 't2', uso(700, 0), 1000)
+
+  // Panel ancho: las cuatro columnas a la vez, para ver las dos tarjetas (las dos están en curso).
+  const ancho = { ...PANE, props: { ...PANE.props, bodyColumns: 120 } }
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /700 tok/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /100 tok/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('los tokens de un subagente cuentan en la tarea, pero su reloj no', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  await iniciar($)
+  await llamar($, 'anadir_tarea', { tareas: [{ texto: 'Con subagente', estado: 'doing', descripcion: 'd' }] })
+
+  await turno($, 't1', uso(100, 0), 60000, async () => {
+    await $.turn.complete({
+      answer: '', durationMs: 999999, isAborted: false, turnId: 's1', reason: 'answer',
+      agentId: 'ag1', usage: uso(300, 0),
+    })
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /400 tok/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('lo guardado antes del gasto sigue funcionando y no inventa cifras', async ($, on) => {
+  mundo(on, false, {
+    'p/viejo': [{ id: 'a', n: 1, project: 'viejo', subject: 'Sin gasto', owner: 'yo', status: 'todo', at: 1 }],
+  })
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Sin gasto/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /tok/ })).toBeFalsy()
+  await ui.unmount()
+})
