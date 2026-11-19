@@ -1,12 +1,13 @@
 export type Owner = 'claude' | 'yo'
 export type Status = 'todo' | 'doing' | 'waiting' | 'done'
 export type Filter = 'all' | 'yo' | 'claude'
+export type Periodo = 'dia' | 'semana' | 'mes'
 
 /** Tokens gastados por tipo: entrada nueva, salida, caché leída y caché escrita. */
 export type Gasto = { i: number; o: number; r: number; w: number }
 
 /** Lo que se gasta cuando no hay ninguna tarea en curso. Se guarda en la clave `libre`. */
-export type Libre = { gasto: Gasto; sub: number; trabajo: number }
+export type Libre = { gasto: Gasto; sub: number; trabajo: number; dias?: Record<string, number> }
 
 export type Task = {
   id: string
@@ -31,6 +32,10 @@ export type Task = {
   desde?: number
   /** Milisegundos que Claude estuvo trabajando en turnos de esta tarea. */
   trabajo?: number
+  /** Tokens propios por día (2026-11-19), para el desglose por tiempo. Lo anterior a esto no tiene fecha. */
+  dias?: Record<string, number>
+  /** Cuándo se archivó. Archivada = fuera de las columnas, con su estado y gasto; no caduca. */
+  archivada?: number
 }
 
 declare module 'claude-code' {
@@ -45,9 +50,15 @@ declare module 'claude-code' {
       tab: Shaped<Status>
       /** Id de la tarea desplegada, o '' si ninguna. */
       open: Shaped<string>
-      /** Tarea en curso de esta sesión ("proyecto|id"), o '' si ninguna. */
       /** Proyectos elegidos en el filtro, separados por salto de línea; '' = todos. */
       proyectos: Shaped<string>
+      /** Sección Archivo desplegada ('1') o plegada (''). */
+      archivoAbierto: Shaped<string>
+      /** Sección Gasto por tiempo desplegada ('1') o plegada (''). */
+      desgloseAbierto: Shaped<string>
+      /** Periodo del desglose por tiempo. */
+      periodo: Shaped<Periodo>
+      /** Tarea en curso de esta sesión ("proyecto|id"), o '' si ninguna. */
       activa: Shaped<string>
       /** Tarea a la que se imputa el turno actual: la activa al empezarlo, o la última que pasó a activa. */
       objetivo: Shaped<string>

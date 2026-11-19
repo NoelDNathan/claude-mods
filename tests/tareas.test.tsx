@@ -278,3 +278,98 @@ test('el filtro de proyectos deja ver solo el elegido', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Del primero/ })).toBeFalsy()
   await ui.unmount()
 })
+
+// --- Archivo y desglose por tiempo ---------------------------------------------------------
+
+const DIA = 24 * 3600 * 1000
+const gasto = (i: number, o = 0) => ({ i, o, r: 0, w: 0 })
+const ancho = { ...PANE, props: { ...PANE.props, bodyColumns: 120 } }
+
+test('archivar a mano saca la tarea de las columnas, pero su gasto sigue contando', async ($, on) => {
+  mundo(on, false, {
+    'p/uno': [
+      { id: 'a', n: 1, project: 'uno', subject: 'Se archiva', owner: 'yo', status: 'todo', at: Date.now(), gasto: gasto(500) },
+      { id: 'b', n: 2, project: 'uno', subject: 'Se queda', owner: 'yo', status: 'todo', at: Date.now() },
+    ],
+  })
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  await llamar($, 'actualizar_tarea', { id: 1, archivada: true })
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Se archiva/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /Se queda/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', text: /Archivo \(1\)/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Gastado 500 tok/ })).toBeTruthy()
+
+  await ui.press({ key: 'sec-archivo' })
+  expect(await ui.find({ type: 'Text', text: /Se archiva/ })).toBeTruthy()
+  await ui.unmount()
+
+  // Se puede desarchivar, y archivar no toca cuándo se hizo.
+  await llamar($, 'actualizar_tarea', { id: 1, archivada: false })
+  expect(JSON.stringify(await llamar($, 'listar_tareas'))).toContain('Se archiva')
+})
+
+test('las hechas hace más de 7 días se archivan solas y las archivadas no caducan', async ($, on) => {
+  mundo(on, false, {
+    'p/uno': [
+      { id: 'a', n: 1, project: 'uno', subject: 'Hecha hace 10 días', owner: 'yo', status: 'done', at: Date.now() - 10 * DIA },
+      { id: 'b', n: 2, project: 'uno', subject: 'Hecha hace 90 días', owner: 'yo', status: 'done', at: Date.now() - 90 * DIA },
+      { id: 'c', n: 3, project: 'uno', subject: 'Hecha ayer', owner: 'yo', status: 'done', at: Date.now() - DIA },
+    ],
+  })
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const normal = JSON.stringify(await llamar($, 'listar_tareas', { incluir_hechas: true }))
+  expect(normal).toContain('Hecha ayer')
+  expect(normal).not.toContain('Hecha hace 10 días')
+
+  const todas = JSON.stringify(await llamar($, 'listar_tareas', { incluir_hechas: true, incluir_archivadas: true }))
+  expect(todas).toContain('#1 [done, archivada]')
+  expect(todas).toContain('#2 [done, archivada]')
+  expect(todas).not.toContain('#3 [done, archivada]')
+})
+
+test('el desglose por tiempo suma por día y deja aparte lo que no tiene fecha', async ($, on) => {
+  mundo(on, false, {
+    'p/uno': [
+      { id: 'a', n: 1, project: 'uno', subject: 'Con fechas', owner: 'claude', status: 'doing', at: Date.now(),
+        gasto: gasto(400), dias: { '2026-11-18': 100, '2026-11-19': 300 } },
+      { id: 'b', n: 2, project: 'uno', subject: 'Sin fechas', owner: 'claude', status: 'todo', at: Date.now(),
+        gasto: gasto(50) },
+    ],
+  })
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  await iniciar($)
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  await ui.press({ key: 'sec-desglose' })
+  await ui.press({ key: 'per-dia' })
+  expect(await ui.find({ type: 'Text', text: /^19 nov$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^18 nov$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^sin fecha$/ })).toBeTruthy()
+
+  await ui.press({ key: 'per-mes' })
+  expect(await ui.find({ type: 'Text', text: /^nov 2026$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('cada turno anota sus tokens en el día de hoy', async ($, on) => {
+  mundo(on)
+  on('tool.register', () => ({ value: { tool: 'x' } }))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', (_: unknown, e: { answer: string; usage?: unknown }) => ({ text: e.answer, usage: e.usage }))
+  await iniciar($)
+  await llamar($, 'anadir_tarea', { tareas: [{ texto: 'Hoy', estado: 'doing' }] })
+  await turno($, 't1', uso(300, 100), 1000)
+
+  const ui = await $.ui.mount({ ...ancho, surface: 'desktop' })
+  await ui.press({ key: 'sec-desglose' })
+  await ui.press({ key: 'per-dia' })
+  expect(await ui.find({ type: 'Text', text: /^\d+ (ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^sin fecha$/ })).toBeFalsy()
+  await ui.unmount()
+})

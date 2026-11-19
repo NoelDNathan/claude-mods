@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Filter, Gasto, Libre, Owner, Status, Task } from '../types'
+import type { Filter, Gasto, Libre, Owner, Periodo, Status, Task } from '../types'
 
 const PANE = 'tareas'
 const MAX_POR_PROYECTO = 300
-const MESES_DONE = 30 * 24 * 3600 * 1000
+// Las tareas hechas pasan solas al archivo a los 7 días. Las archivadas no caducan: solo se borran a mano.
+const DIAS_AUTOARCHIVO = 7 * 24 * 3600 * 1000
 
 // Si cambia la forma de lo guardado, cambia la etiqueta: el valor viejo se descarta.
 const tick = atom({ plugin: 'tareas', key: 'tick' } as const, 0, {
@@ -36,6 +37,16 @@ const objetivo = atom({ plugin: 'tareas', key: 'objetivo' } as const, '', {
 // Proyectos elegidos para ver, separados por salto de línea. '' = todos.
 const proyectosSel = atom({ plugin: 'tareas', key: 'proyectos' } as const, '', {
   shape: 'proyectos-1',
+})
+// Secciones plegables del final del panel ('1' = abierta) y el periodo del desglose por tiempo.
+const archivoAbierto = atom({ plugin: 'tareas', key: 'archivoAbierto' } as const, '', {
+  shape: 'archivoAbierto-1',
+})
+const desgloseAbierto = atom({ plugin: 'tareas', key: 'desgloseAbierto' } as const, '', {
+  shape: 'desgloseAbierto-1',
+})
+const periodo = atom({ plugin: 'tareas', key: 'periodo' } as const, 'semana' as Periodo, {
+  shape: 'periodo-1',
 })
 
 const COLUMNAS: { status: Status; titulo: string }[] = [
@@ -90,9 +101,12 @@ async function cambiar(
   fn: (lista: Task[]) => Task[] | Promise<Task[]>,
 ): Promise<void> {
   const ahora = Date.now()
-  const nueva = (await fn(await cargar($, proyecto)))
-    .filter(t => t.status !== 'done' || ahora - t.at < MESES_DONE)
-    .slice(-MAX_POR_PROYECTO)
+  // Una tarea hecha hace más de 7 días se archiva sola (sin tocar su `at`, que es cuándo se hizo).
+  const lista = (await fn(await cargar($, proyecto))).map(t =>
+    t.status === 'done' && !t.archivada && ahora - t.at >= DIAS_AUTOARCHIVO ? { ...t, archivada: ahora } : t,
+  )
+  // El tope de tareas solo recorta las vivas: las archivadas se conservan siempre.
+  const nueva = [...lista.filter(t => !t.archivada).slice(-MAX_POR_PROYECTO), ...lista.filter(t => t.archivada)]
   await $.store.set(claveDe(proyecto), nueva)
   await update($, tick, n => n + 1)
 }
@@ -189,6 +203,55 @@ function enCurso(t: Task, ahora: number): number {
 
 const refDe = (t: Task) => `${t.project}|${t.id}`
 
+// --- Desglose por tiempo -----------------------------------------------------------------------
+
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+const dos = (n: number) => String(n).padStart(2, '0')
+
+// Día local en forma ordenable: 2026-11-19.
+function diaDe(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${dos(d.getMonth() + 1)}-${dos(d.getDate())}`
+}
+
+// Agrupa un día en su periodo; la clave se ordena igual que el tiempo.
+function clavePeriodo(dia: string, p: Periodo): string {
+  if (p === 'dia') return dia
+  if (p === 'mes') return dia.slice(0, 7)
+  const [y, m, d] = dia.split('-').map(Number) as [number, number, number]
+  const f = new Date(y, m - 1, d)
+  f.setDate(f.getDate() - ((f.getDay() + 6) % 7)) // lunes de esa semana
+  return diaDe(f.getTime())
+}
+
+function etiquetaPeriodo(clave: string, p: Periodo): string {
+  const [y, m, d] = clave.split('-')
+  const mes = MESES[Number(m) - 1] ?? m
+  if (p === 'mes') return `${mes} ${y}`
+  return p === 'semana' ? `sem ${Number(d)} ${mes}` : `${Number(d)} ${mes}`
+}
+
+// Tokens propios por periodo. Lo que se gastó antes de que se guardara el día va a "sin fecha".
+function desglosar(tareas: Task[], libre: Libre | undefined, p: Periodo) {
+  const filas = new Map<string, number>()
+  let sinFecha = 0
+  const sumar = (g: Gasto | undefined, dias: Record<string, number> | undefined) => {
+    let fechado = 0
+    for (const [dia, n] of Object.entries(dias ?? {})) {
+      fechado += n
+      const k = clavePeriodo(dia, p)
+      filas.set(k, (filas.get(k) ?? 0) + n)
+    }
+    sinFecha += Math.max(0, propios(g) - fechado)
+  }
+  for (const t of tareas) sumar(t.gasto, t.dias)
+  if (libre) sumar(libre.gasto, libre.dias)
+  return {
+    filas: [...filas.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)),
+    sinFecha,
+  }
+}
+
 // Al pasar una tarea a En curso pasa a ser la activa; al sacarla de ahí deja de serlo.
 async function marcar($: Mundo, t: Task): Promise<void> {
   if (t.status === 'doing') {
@@ -197,6 +260,12 @@ async function marcar($: Mundo, t: Task): Promise<void> {
   } else if ((await read($, activa)) === refDe(t)) {
     await update($, activa, () => '')
   }
+}
+
+// Anota los tokens propios de un turno en el día de hoy, para poder desglosar el gasto por tiempo.
+function sumarDia(dias: Record<string, number> | undefined, u: Uso): Record<string, number> {
+  const hoy = diaDe(Date.now())
+  return { ...(dias ?? {}), [hoy]: ((dias ?? {})[hoy] ?? 0) + (u.input_tokens || 0) + (u.output_tokens || 0) }
 }
 
 // Suma el gasto de un turno a su tarea; si no hay tarea (o ya no existe), a la bolsa "libre".
@@ -220,6 +289,7 @@ async function imputar(
         return {
           ...x,
           gasto: u ? sumarGasto(x.gasto, u) : x.gasto,
+          dias: u ? sumarDia(x.dias, u) : x.dias,
           sub: (x.sub ?? 0) + propiosSub,
           trabajo: (x.trabajo ?? 0) + trabajoMs,
         }
@@ -230,6 +300,7 @@ async function imputar(
   const previo = (await $.store.get(CLAVE_LIBRE)) as Libre | undefined
   const nuevo: Libre = {
     gasto: u ? sumarGasto(previo?.gasto, u) : (previo?.gasto ?? gastoVacio()),
+    dias: u ? sumarDia(previo?.dias, u) : previo?.dias,
     sub: (previo?.sub ?? 0) + propiosSub,
     trabajo: (previo?.trabajo ?? 0) + trabajoMs,
   }
@@ -238,7 +309,7 @@ async function imputar(
 }
 
 const resumen = (t: Task) =>
-  `#${t.n ?? '?'} [${t.status}] (${t.owner === 'yo' ? 'yo' : 'claude'}) ${t.project}: ${t.subject}`
+  `#${t.n ?? '?'} [${t.status}${t.archivada ? ', archivada' : ''}] (${t.owner === 'yo' ? 'yo' : 'claude'}) ${t.project}: ${t.subject}`
 
 const deClaude: Record<string, Status> = {
   pending: 'todo',
@@ -318,6 +389,7 @@ export const register: Register = on => {
             estado: { type: 'string', enum: ESTADOS, description: 'Solo las de esta columna' },
             owner: { type: 'string', enum: ['claude', 'yo'], description: 'Solo las de este responsable' },
             incluir_hechas: { type: 'boolean', description: 'Incluir las de la columna done' },
+            incluir_archivadas: { type: 'boolean', description: 'Incluir las archivadas (por defecto no salen)' },
           },
         },
         isDeferred: false,
@@ -345,12 +417,22 @@ export const register: Register = on => {
             texto: { type: 'string', description: 'Nuevo título' },
             descripcion: { type: 'string', description: 'Nueva descripción' },
             borrar: { type: 'boolean', description: 'Borrar la tarea' },
+            archivada: {
+              type: 'boolean',
+              description: 'true la archiva (sale del panel, conserva su estado y gasto); false la desarchiva',
+            },
           },
           required: ['id'],
         },
         isDeferred: false,
       })
       await seguro(() => migrarNumeros($))
+      // Pasa al archivo lo que se hizo hace más de 7 días, aunque no se escriba nada más.
+      await seguro(async () => {
+        for (const proyecto of new Set((await cargarTodo($)).map(t => t.project))) {
+          await cambiar($, proyecto, l => l)
+        }
+      })
       await $.command.register({
         name: 'tareas',
         description:
@@ -455,8 +537,15 @@ export const register: Register = on => {
 
     on('tool.call', { tool: 'mcp__tareas__listar_tareas' }, async ($, e) => {
       try {
-        const f = e as { proyecto?: string; estado?: string; owner?: string; incluir_hechas?: boolean }
+        const f = e as {
+          proyecto?: string
+          estado?: string
+          owner?: string
+          incluir_hechas?: boolean
+          incluir_archivadas?: boolean
+        }
         const lista = (await cargarTodo($))
+          .filter(t => f.incluir_archivadas || !t.archivada)
           .filter(t => !f.proyecto || t.project === f.proyecto)
           .filter(t => !f.estado || t.status === f.estado)
           .filter(t => !f.owner || t.owner === f.owner)
@@ -494,6 +583,7 @@ export const register: Register = on => {
           texto?: string
           descripcion?: string
           borrar?: boolean
+          archivada?: boolean
         }
         const n = Number(x.id)
         const t = await buscarPorNumero($, n)
@@ -503,15 +593,20 @@ export const register: Register = on => {
           return { result: `Tarea #${n} borrada.` }
         }
         const ahora = Date.now()
+        // Archivar o desarchivar no cuenta como un cambio de la tarea: conserva su `at` (cuándo se hizo).
+        const soloArchivo =
+          typeof x.archivada === 'boolean' && !x.estado && !x.owner && !x.texto && !x.descripcion
         const nueva: Task = {
           ...conEstado(t, ESTADOS.find(s => s === x.estado) ?? t.status, ahora),
           owner: x.owner === 'yo' || x.owner === 'claude' ? x.owner : t.owner,
           subject: x.texto?.trim() || t.subject,
           desc: x.descripcion?.trim() || t.desc,
-          at: ahora,
+          archivada: typeof x.archivada === 'boolean' ? (x.archivada ? (t.archivada ?? ahora) : undefined) : t.archivada,
+          at: soloArchivo ? t.at : ahora,
         }
         await cambiar($, t.project, l => l.map(y => (y.id === t.id ? nueva : y)))
         await marcar($, nueva)
+        if (nueva.archivada && (await read($, activa)) === refDe(nueva)) await update($, activa, () => '')
         return { result: `Actualizada: ${resumen(nueva)}` }
       } catch {
         return { result: 'Error: no se pudo guardar en el almacén de tareas.' }
@@ -614,6 +709,9 @@ export const register: Register = on => {
       const todas = await cargarTodo($)
       const libre = ((await $.store.get(CLAVE_LIBRE)) as Libre | undefined) ?? undefined
       const ahora = Date.now()
+      const archivoOpen = (await read($, archivoAbierto)) === '1'
+      const desgloseOpen = (await read($, desgloseAbierto)) === '1'
+      const per = await read($, periodo)
 
       // Filtro de proyectos: solo cuenta lo elegido que aún existe.
       const nombres = [...new Set(todas.map(t => t.project))].sort((a, b) => a.localeCompare(b))
@@ -635,11 +733,17 @@ export const register: Register = on => {
       const ancho = e.props.bodyColumns
       const enColumnas = ancho >= 90
 
-      const visibles = todas.filter(t => (f === 'all' || t.owner === f) && verProyecto(t.project))
+      // Las archivadas salen de las columnas y de los contadores, pero siguen contando en el gasto.
+      const vivas = todas.filter(t => !t.archivada)
+      const archivadas = todas.filter(t => t.archivada)
+      const visibles = vivas.filter(t => (f === 'all' || t.owner === f) && verProyecto(t.project))
+      const archivadasVis = archivadas
+        .filter(t => (f === 'all' || t.owner === f) && verProyecto(t.project))
+        .sort((a, b) => (b.archivada ?? 0) - (a.archivada ?? 0))
       const cuantas = (s: Status) => visibles.filter(t => t.status === s).length
-      const mias = todas.filter(t => t.owner === 'yo' && t.status !== 'done').length
-      const deC = todas.filter(t => t.owner === 'claude' && t.status !== 'done').length
-      const teEsperan = todas.filter(t => t.owner === 'yo' && t.status === 'waiting')
+      const mias = vivas.filter(t => t.owner === 'yo' && t.status !== 'done').length
+      const deC = vivas.filter(t => t.owner === 'claude' && t.status !== 'done').length
+      const teEsperan = vivas.filter(t => t.owner === 'yo' && t.status === 'waiting')
 
       const mover = async (t: Task, status: Status) => {
         const nueva = conEstado(t, status, Date.now())
@@ -651,6 +755,13 @@ export const register: Register = on => {
           l.map(x => (x.id === t.id ? { ...x, owner: x.owner === 'yo' ? 'claude' : 'yo' } : x)),
         )
       const borrar = (t: Task) => cambiar($, t.project, l => l.filter(x => x.id !== t.id))
+      // Archivar no cambia el estado ni el `at` (cuándo se hizo); una tarea archivada deja de ser la activa.
+      const archivar = async (t: Task, valor: boolean) => {
+        await cambiar($, t.project, l =>
+          l.map(x => (x.id === t.id ? { ...x, archivada: valor ? Date.now() : undefined } : x)),
+        )
+        if (valor && (await read($, activa)) === refDe(t)) await update($, activa, () => '')
+      }
       const alternar = (t: Task) => update($, open, v => (v === t.id ? '' : t.id))
 
       const filtroBtn = (id: Filter, etiqueta: string) => (
@@ -754,12 +865,12 @@ export const register: Register = on => {
                 </Box>
               )}
               <Box flexGrow={1} />
-              {t.status !== 'doing' && t.status !== 'done' && (
+              {!t.archivada && t.status !== 'doing' && t.status !== 'done' && (
                 <Button key={`d-${t.id}`} plain dimColor onPress={() => void mover(t, 'doing')}>
                   ▶
                 </Button>
               )}
-              {t.status !== 'done' && (
+              {!t.archivada && t.status !== 'done' && (
                 <Button key={`k-${t.id}`} plain dimColor onPress={() => void mover(t, 'done')}>
                   ✓
                 </Button>
@@ -796,19 +907,31 @@ export const register: Register = on => {
             )}
             {desplegada && (
               <Box flexWrap="wrap" gap={1} paddingLeft={2}>
-                {t.status !== 'todo' && (
+                {t.archivada && (
+                  <Button key={`u-${t.id}`} plain dimColor onPress={() => void archivar(t, false)}>
+                    ↺ desarchivar
+                  </Button>
+                )}
+                {!t.archivada && t.status !== 'todo' && (
                   <Button key={`s-${t.id}`} plain dimColor onPress={() => void mover(t, 'todo')}>
                     ↺ a To do
                   </Button>
                 )}
-                {t.status !== 'waiting' && (
+                {!t.archivada && t.status !== 'waiting' && (
                   <Button key={`w-${t.id}`} plain dimColor onPress={() => void mover(t, 'waiting')}>
                     ⏸ en espera
                   </Button>
                 )}
-                <Button key={`o-${t.id}`} plain dimColor onPress={() => void traspasar(t)}>
-                  {t.owner === 'yo' ? '→ pasar a Claude' : '→ hacerla yo'}
-                </Button>
+                {!t.archivada && (
+                  <Button key={`o-${t.id}`} plain dimColor onPress={() => void traspasar(t)}>
+                    {t.owner === 'yo' ? '→ pasar a Claude' : '→ hacerla yo'}
+                  </Button>
+                )}
+                {!t.archivada && (
+                  <Button key={`a-${t.id}`} plain dimColor onPress={() => void archivar(t, true)}>
+                    ⌂ archivar
+                  </Button>
+                )}
                 <Button key={`x-${t.id}`} plain dimColor onPress={() => void borrar(t)}>
                   × borrar
                 </Button>
@@ -930,6 +1053,88 @@ export const register: Register = on => {
               <Box marginTop={1} flexDirection="column">
                 {lista(pestana)}
               </Box>
+            </Box>
+          )}
+          {archivadas.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Button
+                  key="sec-archivo"
+                  plain
+                  dimColor
+                  onPress={() => void update($, archivoAbierto, v => (v === '1' ? '' : '1'))}
+                >
+                  {`${archivoOpen ? '▾' : '▸'} Archivo (${archivadasVis.length})`}
+                </Button>
+              </Box>
+              {archivoOpen && (
+                <Box flexDirection="column" marginTop={1}>
+                  {archivadasVis.length === 0 && <Text dimColor>—</Text>}
+                  {[...new Set(archivadasVis.map(t => t.project))].map(p => (
+                    <Box key={`ga-${p}`} flexDirection="column">
+                      <Text color={colorDe(p)} size="footnote" weight="medium">
+                        {p}
+                      </Text>
+                      {archivadasVis.filter(t => t.project === p).map(fila)}
+                    </Box>
+                  ))}
+                </Box>
+              )}
+            </Box>
+          )}
+          {totalTok > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Button
+                  key="sec-desglose"
+                  plain
+                  dimColor
+                  onPress={() => void update($, desgloseAbierto, v => (v === '1' ? '' : '1'))}
+                >
+                  {`${desgloseOpen ? '▾' : '▸'} Gasto por tiempo`}
+                </Button>
+              </Box>
+              {desgloseOpen && (() => {
+                const des = desglosar(
+                  todas.filter(t => verProyecto(t.project)),
+                  sel.length === 0 ? libre : undefined,
+                  per,
+                )
+                const filas = des.filas.slice(0, 12)
+                const maximo = Math.max(1, des.sinFecha, ...filas.map(x => x[1]))
+                const fila2 = (clave: string, etiqueta: string, n: number) => (
+                  <Box key={`dt-${clave}`} gap={1}>
+                    <Box width={11}>
+                      <Text dimColor size="footnote">
+                        {etiqueta}
+                      </Text>
+                    </Box>
+                    <Text color="yellow" size="footnote">
+                      {'█'.repeat(Math.max(1, Math.round((14 * n) / maximo)))}
+                    </Text>
+                    <Text dimColor size="footnote">
+                      {compacto(n)}
+                    </Text>
+                  </Box>
+                )
+                return (
+                  <Box flexDirection="column" marginTop={1}>
+                    <Box gap={1} marginBottom={1}>
+                      {(['dia', 'semana', 'mes'] as Periodo[]).map(x => (
+                        <Button
+                          key={`per-${x}`}
+                          variant={per === x ? 'primary' : 'secondary'}
+                          onPress={() => void update($, periodo, () => x)}
+                        >
+                          {x === 'dia' ? 'Día' : x === 'semana' ? 'Semana' : 'Mes'}
+                        </Button>
+                      ))}
+                    </Box>
+                    {filas.map(([clave, n]) => fila2(clave, etiquetaPeriodo(clave, per), n))}
+                    {des.sinFecha > 0 && fila2('sin-fecha', 'sin fecha', des.sinFecha)}
+                  </Box>
+                )
+              })()}
             </Box>
           )}
           {teEsperan.length > 0 && (

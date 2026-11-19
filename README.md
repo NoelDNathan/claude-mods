@@ -45,3 +45,12 @@ el desglose (entrada, salida, caché leída y escrita), lo de los subagentes y e
   proyecto y el total de arriba sigue al filtro.
 - El desglose usa un color por tipo (entrada, salida, caché, tiempo) y una barra de reparto entrada/salida.
 - Las tareas hechas muestran cuánto duraron.
+
+## Archivo y gasto por tiempo (desde 0.5.0)
+
+- **Archivar** es una marca aparte: la tarea conserva su estado y su gasto, pero sale de las columnas y de los
+  contadores. Se archiva a mano (`⌂ archivar` al desplegar cualquier tarjeta, o `archivada: true` desde Claude) y
+  sola: las hechas pasan al archivo a los 7 días. Las archivadas no caducan; solo se borran a mano.
+- La sección plegable **Archivo (N)** del final del panel las lista, con `↺ desarchivar` y `× borrar`.
+- Los tokens de las archivadas siguen contando en el total. **Gasto por tiempo** los desglosa por día, semana o mes;
+  lo gastado antes de 0.5.0 no tiene fecha y sale como «sin fecha».
