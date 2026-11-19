@@ -606,7 +606,7 @@ export const register: Register = on => {
     })
 
     on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-      const { Box, Text, Button } = $.ui.resolve(e)
+      const { Box, Text, Button, Select } = $.ui.resolve(e)
       await read($, tick)
       const f = await read($, filter)
       const pestana = await read($, tab)
@@ -867,22 +867,32 @@ export const register: Register = on => {
           </Box>
           {nombres.length > 1 && (
             <Box flexWrap="wrap" gap={1} marginTop={1}>
-              <Button
-                key="pr-todos"
-                variant={sel.length === 0 ? 'primary' : 'secondary'}
-                onPress={() => void update($, proyectosSel, () => '')}
-              >
-                Todos los proyectos
-              </Button>
-              {nombres.map(p => (
-                <Button
-                  key={`pr-${p}`}
-                  variant={sel.includes(p) ? 'primary' : 'secondary'}
-                  onPress={() => void alternarProyecto(p)}
-                >
-                  {gastoDe(p) > 0 ? `${p} · ${compacto(gastoDe(p))}` : p}
+              {sel.length === 0 && <Text dimColor>Todos los proyectos</Text>}
+              {sel.map(p => (
+                <Button key={`pr-${p}`} variant="primary" onPress={() => void alternarProyecto(p)}>
+                  {`${p} ✕`}
                 </Button>
               ))}
+              {sel.length > 1 && (
+                <Button key="pr-limpiar" plain dimColor onPress={() => void update($, proyectosSel, () => '')}>
+                  Limpiar
+                </Button>
+              )}
+              {nombres.some(p => !sel.includes(p)) && (
+                <Select
+                  key="pr-select"
+                  options={[
+                    { value: '', label: sel.length === 0 ? 'Filtrar por proyecto' : '+ proyecto' },
+                    ...nombres
+                      .filter(p => !sel.includes(p))
+                      .map(p => ({ value: p, label: gastoDe(p) > 0 ? `${p} · ${compacto(gastoDe(p))}` : p })),
+                  ]}
+                  value=""
+                  onSelect={v => {
+                    if (v) void alternarProyecto(v)
+                  }}
+                />
+              )}
             </Box>
           )}
           {totalTok > 0 && (

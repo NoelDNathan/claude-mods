@@ -40,7 +40,8 @@ el desglose (entrada, salida, caché leída y escrita), lo de los subagentes y e
 
 ## Filtro por proyecto y desglose (desde 0.4.0)
 
-- Con dos o más proyectos aparece una fila de botones: se puede elegir uno o varios; «Todos los proyectos» los
-  quita. Cada botón lleva el gasto del proyecto y el total de arriba sigue al filtro.
+- Con dos o más proyectos aparece una fila con los proyectos elegidos como etiquetas (pulsa una para quitarla)
+  y un desplegable para añadir más; sin ninguno elegido se ven todos. El desplegable lleva el gasto de cada
+  proyecto y el total de arriba sigue al filtro.
 - El desglose usa un color por tipo (entrada, salida, caché, tiempo) y una barra de reparto entrada/salida.
 - Las tareas hechas muestran cuánto duraron.

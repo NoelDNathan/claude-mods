@@ -270,9 +270,9 @@ test('el filtro de proyectos deja ver solo el elegido', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Del primero/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Del segundo/ })).toBeTruthy()
 
-  expect(await ui.find({ type: 'Button', text: /^dos$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Select' })).toBeTruthy()
 
-  await ui.press({ key: 'pr-dos' })
+  await ui.select({ key: 'pr-select', value: 'dos' })
 
   expect(await ui.find({ type: 'Text', text: /Del segundo/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Del primero/ })).toBeFalsy()
