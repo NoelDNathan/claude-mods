@@ -1,0 +1,6 @@
+{
+  "name": "tareas",
+  "version": "0.2.0",
+  "description": "Panel con las tareas de todos los proyectos, separadas entre las de Claude y las tuyas",
+  "types": "./types/index.d.ts"
+}
