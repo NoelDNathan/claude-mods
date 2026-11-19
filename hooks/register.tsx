@@ -644,6 +644,22 @@ export const register: Register = on => {
         </Button>
       )
 
+      // Una fila del desglose: etiqueta apagada con ancho fijo y el valor al lado, para que alineen.
+      const dato = (etiqueta: string, valor: string, color?: string) => (
+        <Box key={`d-${etiqueta}`} gap={1}>
+          <Box width={11}>
+            <Text dimColor size="footnote">
+              {etiqueta}
+            </Text>
+          </Box>
+          <Box flexShrink={1}>
+            <Text color={color} size="footnote" wrap="wrap">
+              {valor}
+            </Text>
+          </Box>
+        </Box>
+      )
+
       // Una tarea = dos líneas: título recortado y una línea de datos con iconos.
       const fila = (t: Task) => {
         const desplegada = abierta === t.id
@@ -670,13 +686,13 @@ export const register: Register = on => {
                 {hace(t.at)}
               </Text>
               {propios(t.gasto) > 0 && (
-                <Text dimColor size="footnote">
-                  {`${compacto(propios(t.gasto))} tok`}
+                <Text color="yellow" size="footnote">
+                  {`◆ ${compacto(propios(t.gasto))} tok`}
                 </Text>
               )}
               {enCurso(t, ahora) >= 60000 && (
-                <Text dimColor size="footnote">
-                  {duracion(enCurso(t, ahora))}
+                <Text color="green" size="footnote">
+                  {`◷ ${duracion(enCurso(t, ahora))}`}
                 </Text>
               )}
               <Box flexGrow={1} />
@@ -695,18 +711,12 @@ export const register: Register = on => {
               </Button>
             </Box>
             {desplegada && (t.gasto || t.trabajo || enCurso(t, ahora) > 0) && (
-              <Box paddingLeft={2} marginTop={1}>
-                <Text dimColor wrap="wrap">
-                  {[
-                    t.gasto &&
-                      `Entrada ${compacto(t.gasto.i)} · Salida ${compacto(t.gasto.o)} · Caché leída ${compacto(t.gasto.r)} · Caché escrita ${compacto(t.gasto.w)}`,
-                    t.sub ? `Subagentes ${compacto(t.sub)} tok` : undefined,
-                    enCurso(t, ahora) > 0 ? `En curso ${duracion(enCurso(t, ahora))}` : undefined,
-                    t.trabajo ? `Claude trabajando ${duracion(t.trabajo)}` : undefined,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </Text>
+              <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+                {t.gasto && dato('Tokens', `${compacto(propios(t.gasto))} propios · ${compacto(t.gasto.i)} entrada · ${compacto(t.gasto.o)} salida`, 'yellow')}
+                {t.gasto && dato('Caché', `${compacto(t.gasto.r)} leída · ${compacto(t.gasto.w)} escrita`)}
+                {t.sub ? dato('Subagentes', `${compacto(t.sub)} tok`) : undefined}
+                {enCurso(t, ahora) > 0 && dato('En curso', duracion(enCurso(t, ahora)), 'green')}
+                {t.trabajo ? dato('Claude', `trabajando ${duracion(t.trabajo)}`) : undefined}
               </Box>
             )}
             {desplegada && t.desc && (
@@ -789,9 +799,8 @@ export const register: Register = on => {
           </Box>
           {totalTok > 0 && (
             <Box marginTop={1}>
-              <Text dimColor size="footnote" wrap="wrap">
-                {`Gastado: ${compacto(totalTok)} tok`}
-                {propios(libre?.gasto) > 0 ? ` · sin tarea ${compacto(propios(libre?.gasto))}` : ''}
+              <Text color="yellow" size="footnote" wrap="wrap">
+                {`◆ Gastado ${compacto(totalTok)} tok${propios(libre?.gasto) > 0 ? ` · sin tarea ${compacto(propios(libre?.gasto))}` : ''}`}
               </Text>
             </Box>
           )}
